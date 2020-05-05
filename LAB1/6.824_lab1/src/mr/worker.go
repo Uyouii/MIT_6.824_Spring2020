@@ -1,10 +1,12 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"time"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,41 +26,34 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	// 1. map phase
+	workerId := Register()
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+	mapTaskDone := false
 
+	for mapTaskDone == false {
+		getMapTaskResp := GetMapTask(workerId)
+		mapTaskDone = getMapTaskResp.mapTaskDone
+		if mapTaskDone {
+			break
+		}
+		fileName := getMapTaskResp.fileName
+
+		if len(fileName) == 0 {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		// DoMap(workerId, mapf, fileName)
+	}
 }
 
-//
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+func DoMap(workerId int, mapf func(string, string) []KeyValue, fileName string) {
+	fmt.Printf("Begin DoMap, workerid: %d, fiel: %v\n", workerId, fileName)
 }
 
 //
@@ -82,4 +77,29 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+func CallExample() {
+
+	args := ExampleArgs{}
+	args.X = 99
+	reply := ExampleReply{}
+
+	call("Master.Example", &args, &reply)
+	fmt.Printf("reply.Y %v\n", reply.Y)
+}
+
+func Register() int {
+	req := WorkerRegisterReq{}
+	resp := WorkerRegisterResp{}
+	call("Master.WorkerRegister", &req, &resp)
+	fmt.Printf("worker %d register\n", resp.workerId)
+	return resp.workerId
+}
+
+func GetMapTask(workerId int) GetMapTaskResp {
+	req := GetMapTaskReq{workerId}
+	resp := GetMapTaskResp{}
+	call("Master.GetMapTask", &req, &resp)
+	return resp
 }

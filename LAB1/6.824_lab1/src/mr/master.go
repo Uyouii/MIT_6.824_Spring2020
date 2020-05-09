@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -19,14 +20,16 @@ const (
 )
 
 type Master struct {
-	isMapDone    bool
-	workerNum    int
-	workers      map[int]WorkerStatus
-	workersMux   sync.Mutex
-	reduceNum    int
-	mapFiles     []string
-	curMapId     int32
-	doneMapFiles []string
+	mapTaskDone     bool
+	workerNum       int
+	workers         map[int]WorkerStatus
+	workersMux      sync.Mutex
+	reduceNum       int
+	reduceHandleBit []int
+	reduceTaskDone  bool
+	mapFiles        []string
+	curHandleMapId  int
+	doneMapFiles    []string
 }
 
 //
@@ -57,19 +60,17 @@ func (m *Master) Done() bool {
 	return ret
 }
 
-//
-// create a Master.
-// main/mrmaster.go calls this function.
-// nReduce is the number of reduce tasks to use.
-//
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	m.reduceNum = nReduce
-	m.mapFiles = files
+	m.mapFiles = make([]string, len(files))
+	copy(m.mapFiles, files)
+	m.reduceHandleBit = make([]int, nReduce)
+	m.workers = make(map[int]WorkerStatus)
 
 	m.Server()
-	m.Run()
+	go m.Run()
 
 	return &m
 }
@@ -77,13 +78,12 @@ func MakeMaster(files []string, nReduce int) *Master {
 func (m *Master) Run() {
 	// 1. map
 	for len(m.doneMapFiles) < len(m.mapFiles) {
-		freeWorkerId := m.GetFreeWorker()
-		// no free worker
-		if freeWorkerId < 0 {
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
+		time.Sleep(100 * time.Millisecond)
+		continue
 	}
+	m.mapTaskDone = true
+
+	// 2. reduce
 }
 
 // get free worker
@@ -109,14 +109,32 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (m *Master) WorkerRegister(req *WorkerRegisterReq, resp *WorkerRegisterResp) error {
 	workerId := m.workerNum
-	resp.workerId = workerId
+	resp.WorkerId = workerId
 	m.workerNum += 1
 
 	m.workersMux.Lock()
 	m.workers[workerId] = WORKER_STATUS_FREE
 	m.workersMux.Unlock()
-
+	fmt.Printf("worler %d register\n", workerId)
 	return nil
 }
 
-// func (m *Master) GetMapTask()
+func (m *Master) GetMapTask(req *GetMapTaskReq, resp *GetMapTaskResp) error {
+	resp.MapTaskDone = m.mapTaskDone
+	resp.ReduceNum = m.reduceNum
+
+	if m.curHandleMapId >= len(m.mapFiles)-1 {
+		return nil
+	}
+
+	m.workersMux.Lock()
+	m.workers[req.WorkerId] = WORKER_STATUS_BUSY
+	m.workersMux.Unlock()
+
+	resp.FileName = m.mapFiles[m.curHandleMapId]
+	m.curHandleMapId += 1
+
+	fmt.Printf("worler %d get map task: %v\n", req.WorkerId, resp.FileName)
+
+	return nil
+}

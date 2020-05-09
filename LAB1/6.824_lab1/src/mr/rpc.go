@@ -35,14 +35,15 @@ type WorkerRegisterReq struct {
 }
 
 type WorkerRegisterResp struct {
-	workerId int
+	WorkerId int
 }
 
 type GetMapTaskReq struct {
-	workerId int
+	WorkerId int
 }
 
 type GetMapTaskResp struct {
-	mapTaskDone bool
-	fileName    string
+	MapTaskDone bool
+	FileName    string
+	ReduceNum   int
 }

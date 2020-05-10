@@ -1,1 +1,6 @@
 tempReduceFile/
+mr-out-* 
+mr-tmp/
+mrmaster
+mrworker
+mrsequential

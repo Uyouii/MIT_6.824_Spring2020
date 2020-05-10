@@ -8,6 +8,9 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -43,13 +46,16 @@ func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
 	// 1. map phase
-	workerId := Register()
+	workerId := CallRegister()
 
 	mapTaskDone := false
 
 	for mapTaskDone == false {
-		getMapTaskResp := GetMapTask(workerId)
-		fmt.Printf("Worker %d get map task, done: %v file: %v\n", workerId, getMapTaskResp, getMapTaskResp.FileName)
+
+		time.Sleep(1000 * time.Millisecond)
+
+		getMapTaskResp := CallGetMapTask(workerId)
+		fmt.Printf("Worker %d get map task, done: %v \n", workerId, getMapTaskResp)
 		mapTaskDone = getMapTaskResp.MapTaskDone
 		if mapTaskDone {
 			break
@@ -58,14 +64,103 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		reduceNum := getMapTaskResp.ReduceNum
 
 		if len(fileName) == 0 {
-			time.Sleep(2 * time.Millisecond)
 			continue
 		}
 		err := DoMap(workerId, mapf, reduceNum, fileName)
 		if err != nil {
 			log.Fatalf("do map failed, %v", err)
+		} else {
+			CallMapTaskDone(workerId, fileName)
 		}
 	}
+
+	reduceTaskDone := false
+
+	// 2. recude phase
+	for reduceTaskDone == false {
+
+		time.Sleep(1000 * time.Millisecond)
+
+		getReduceTaskResp := CallGetReduceTask(workerId)
+		fmt.Printf("Worker %d get reduce task, done: %v\n", workerId, getReduceTaskResp)
+		reduceTaskDone = getReduceTaskResp.ReduceTaskDone
+		if reduceTaskDone {
+			break
+		}
+		reduceId := getReduceTaskResp.ReduceId
+		if reduceId < 0 {
+			continue
+		}
+
+		err := DoReduce(workerId, reducef, reduceId)
+		if err != nil {
+			log.Fatalf("do reduce failed, %v", err)
+		} else {
+			CallReduceTaskDone(workerId, reduceId)
+		}
+	}
+}
+
+func DoReduce(workerId int, reducef func(string, []string) string, recudeId int) error {
+	fmt.Printf("Begin DoMap, workerid: %d, reduceId: %v\n", workerId, recudeId)
+	strAllRecudeFile := fmt.Sprintf("reduce-out-%d-*", recudeId)
+	reduceFiles, err := filepath.Glob(strAllRecudeFile)
+	if err != nil {
+		log.Fatalf("Glob read %v", strAllRecudeFile)
+		return err
+	}
+	// fmt.Printf("reduceFiles: %v\n", reduceFiles)
+	allReduceData := []KeyValue{}
+
+	for _, fileName := range reduceFiles {
+		content, err := ReadDataFromFile(fileName)
+		if err != nil {
+			log.Fatalf("cannot read %v", fileName)
+			return err
+		}
+
+		kvDataList := []KeyValue{}
+		err = json.Unmarshal([]byte(content), &kvDataList)
+		if err != nil {
+			log.Fatalf("Unmarshal %v", fileName)
+			return err
+		}
+
+		// fmt.Println(kvDataList)
+		allReduceData = append(allReduceData, kvDataList...)
+	}
+
+	sort.Sort(ByKey(allReduceData))
+
+	outFileName := fmt.Sprintf("mr-out-%d", recudeId)
+
+	ofile, _ := os.Create(outFileName)
+
+	i := 0
+	for i < len(allReduceData) {
+		j := i + 1
+		for j < len(allReduceData) && allReduceData[j].Key == allReduceData[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, allReduceData[k].Value)
+		}
+		output := reducef(allReduceData[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", allReduceData[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+
+	for _, fileName := range reduceFiles {
+		os.Remove(fileName) // clean up
+	}
+
+	return nil
 }
 
 func DoMap(workerId int, mapf func(string, string) []KeyValue, reduceNum int, fileName string) error {
@@ -79,7 +174,7 @@ func DoMap(workerId int, mapf func(string, string) []KeyValue, reduceNum int, fi
 
 	filedata := mapf(fileName, string(content))
 
-	// sort.Sort(ByKey(intermediate))
+	// sort.Sort(ByKey(allReduceData))
 	reduceData := make([][]KeyValue, reduceNum)
 
 	for _, kvData := range filedata {
@@ -95,6 +190,7 @@ func DoMap(workerId int, mapf func(string, string) []KeyValue, reduceNum int, fi
 		strKvDataJson := string(res)
 
 		reducdeFileName := GetRecudeTempFileName(index, fileName)
+
 		err = WriteDataToFile(strKvDataJson, reducdeFileName)
 		if err != nil {
 			log.Fatalf("write json data to file failed, filename: %v, err: %v", reducdeFileName, err)
@@ -104,9 +200,13 @@ func DoMap(workerId int, mapf func(string, string) []KeyValue, reduceNum int, fi
 	return nil
 }
 
-func GetRecudeTempFileName(reduceIndex int, originFileName string) string {
-	reducdeFileName := fmt.Sprintf("reduce-out-%v-%d", originFileName, reduceIndex)
-	reducdeFileName = "tempReduceFile/" + reducdeFileName
+func GetRecudeTempFileName(reduceIndex int, fullPathFileName string) string {
+	originFileName := fullPathFileName
+	loc := strings.LastIndex(fullPathFileName, "/")
+	if loc > 0 {
+		originFileName = fullPathFileName[loc+1:]
+	}
+	reducdeFileName := fmt.Sprintf("reduce-out-%d-%v", reduceIndex, originFileName)
 	return reducdeFileName
 }
 
@@ -131,7 +231,7 @@ func WriteDataToFile(data string, fileName string) error {
 		log.Fatalf("cannot create file: %v err: %v", fileName, err)
 	}
 
-	fmt.Fprintf(ofile, "%v", err)
+	fmt.Fprintf(ofile, "%v", data)
 
 	ofile.Close()
 
@@ -170,7 +270,7 @@ func CallExample() {
 	fmt.Printf("reply.Y %v\n", reply.Y)
 }
 
-func Register() int {
+func CallRegister() int {
 	req := WorkerRegisterReq{}
 	resp := WorkerRegisterResp{}
 	call("Master.WorkerRegister", &req, &resp)
@@ -178,10 +278,35 @@ func Register() int {
 	return resp.WorkerId
 }
 
-func GetMapTask(workerId int) GetMapTaskResp {
+func CallGetMapTask(workerId int) GetMapTaskResp {
 	req := GetMapTaskReq{}
 	req.WorkerId = workerId
 	resp := GetMapTaskResp{}
 	call("Master.GetMapTask", &req, &resp)
 	return resp
+}
+
+func CallMapTaskDone(workerId int, fileName string) {
+	req := MapTaskDoneReq{}
+	req.WorkerId = workerId
+	req.FileName = fileName
+	resp := EmptyResp{}
+	call("Master.MapTaskDone", &req, &resp)
+}
+
+func CallGetReduceTask(workerId int) GetReduceTaskResp {
+	req := GetReduceTaskReq{}
+	req.WorkerId = workerId
+	resp := GetReduceTaskResp{}
+	call("Master.GetReduceTask", &req, &resp)
+	return resp
+}
+
+func CallReduceTaskDone(workerId int, reduceId int) {
+	req := ReduceTaskDoneReq{}
+	req.WorkerId = workerId
+	req.ReduceId = reduceId
+	resp := EmptyResp{}
+	call("Master.ReduceTaskDone", &req, &resp)
+	return
 }

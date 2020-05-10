@@ -1,11 +1,23 @@
 package main
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type response2 struct {
+	Page   int      `json:"page"`
+	Fruits []string `json:"fruits"`
+}
 
 func main() {
-	sl_a := []byte{'r', 'o', 'a', 'd'}
-	sl_b := sl_a[1:2]
-	fmt.Printf("len=%d cap=%d b: %s a: %s\n", len(sl_b), cap(sl_b), sl_b, sl_a)
-	sl_b = append(sl_b, sl_a...)
-	fmt.Printf("len=%d cap=%d b: %s a: %s\n", len(sl_b), cap(sl_b), sl_b, sl_a)
+	slcD := []string{"apple", "peach", "pear"}
+	slcB, _ := json.Marshal(slcD)
+	fmt.Println(string(slcB))
+
+	str := `["apple","peach","pear"]`
+	res := []string{}
+	json.Unmarshal([]byte(str), &res)
+	fmt.Println(res)
+	fmt.Println(res[0])
 }

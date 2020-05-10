@@ -31,6 +31,12 @@ type ExampleReply struct {
 	Y int
 }
 
+type EmptyReq struct {
+}
+
+type EmptyResp struct {
+}
+
 type WorkerRegisterReq struct {
 }
 
@@ -46,4 +52,23 @@ type GetMapTaskResp struct {
 	MapTaskDone bool
 	FileName    string
 	ReduceNum   int
+}
+
+type MapTaskDoneReq struct {
+	WorkerId int
+	FileName string
+}
+
+type GetReduceTaskReq struct {
+	WorkerId int
+}
+
+type GetReduceTaskResp struct {
+	ReduceId       int
+	ReduceTaskDone bool
+}
+
+type ReduceTaskDoneReq struct {
+	WorkerId int
+	ReduceId int
 }

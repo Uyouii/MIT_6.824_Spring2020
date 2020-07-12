@@ -17,13 +17,13 @@ def AesDecode():
     print(pt)
 
 def VoipHmacSha256():
-    value_list = ['test', 'group3', "wx20afc706a711eefc"]
+    value_list = ['test', 'group2', "wx20afc706a711eefc"]
     value_list.sort()
     msg = ''
     for value in value_list:
         msg = msg + value
     print (msg)
-    key = "Pta0BTw0DqTc4v4v5DL35w=="
+    key = "bxLdikRXVbTPdHSM05e5u5sUoXNKd8-41ZO3MhKoyN5OfkWITDGgnr2fwJ0m9E8NYzWKVZvdVtaUgWvsdshFKA"
     signature = hmac.new(bytes(key , 'utf-8'),  bytes(msg , 'utf-8'), digestmod = hashlib.sha256).hexdigest()
     print (signature)
 

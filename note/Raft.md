@@ -126,7 +126,7 @@ Each log entry stores a state machine command along with the term number when th
 
 >  Logs are composed of entries, which are numbered sequentially. Each entry contains the term in which it was created (the number in each box) and a command for the state machine. An entry is considered **_committed_** if it is safe for that entry to be applied to state machines.
 
-The leader decides when it is safe to apply a log entry to the state machines; such an entry is called **_committed_**.  Raft guarantees that committed entries are durable and will eventually be executed by all of the available state machines. A log entry is committed once the leader that created the entry has replicated it on a majority of the servers. This also commits all preceding entries in the leader's log,  including entries created by previous leaders.
+The leader decides when it is safe to apply a log entry to the state machines; such an entry is called **_<u>committed</u>_**.  Raft guarantees that committed entries are durable and will eventually be executed by all of the available state machines. A log entry is committed once the leader that created the entry has replicated it on a majority of the servers. This also commits all preceding entries in the leader's log,  including entries created by previous leaders.
 
 The leader keeps track of the highest index it knows to be committed, and it includes that index in future AppendEntries RPCs (including heartbeats) so that the other servers eventually find out. Once a follower learns that a log entry is committed, it applies the entry to its local state machine (in log order).
 

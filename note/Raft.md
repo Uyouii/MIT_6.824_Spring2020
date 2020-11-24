@@ -51,7 +51,13 @@ Raft decomposesthe consensus problem into three relatively independent subproble
 
 > A condensed summary of the Raft consensus algorithm
 
-![image](https://note.youdao.com/yws/api/personal/file/WEB4a81fd267c062ab7241818b398ba0c2d?method=download&shareKey=fd2944336932798bb3ba50cf1560f855)
+
+
+- **Election Safety**: at most one leader can be elected in a given term. **5.2**
+- **Leader Append-Only**: a leader never overwrites or deletes entries in its log; it only appends new entries. **5.3**
+- **Log Matching** : if two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index. **5.3**
+- **Leader Completeness**: if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms. **5.4**
+- **State Maching Safety**: if a server has applied a log entry at a given index to its state machine, no other server wiil ever apply a different log entry for the same index. **5.4.3**
 
 >  Raft guarantees that each of these properties is true at all times. 
 
@@ -126,7 +132,7 @@ Each log entry stores a state machine command along with the term number when th
 
 >  Logs are composed of entries, which are numbered sequentially. Each entry contains the term in which it was created (the number in each box) and a command for the state machine. An entry is considered **_committed_** if it is safe for that entry to be applied to state machines.
 
-The leader decides when it is safe to apply a log entry to the state machines; such an entry is called **_<u>committed</u>_**.  Raft guarantees that committed entries are durable and will eventually be executed by all of the available state machines. A log entry is committed once the leader that created the entry has replicated it on a majority of the servers. This also commits all preceding entries in the leader's log,  including entries created by previous leaders.
+The leader decides when it is safe to apply a log entry to the state machines; such an entry is called **_<u>committed</u>_**.  Raft guarantees that committed entries are durable and will eventually be executed by all of the available state machines. <u>A log entry is committed once the leader that created the entry has replicated it on a majority of the servers</u>. This also commits all preceding entries in the leader's log,  including entries created by previous leaders.
 
 The leader keeps track of the highest index it knows to be committed, and it includes that index in future AppendEntries RPCs (including heartbeats) so that the other servers eventually find out. Once a follower learns that a log entry is committed, it applies the entry to its local state machine (in log order).
 
@@ -137,9 +143,9 @@ Raft maintains the following properties:
 The first property follows from the fact that a leader creates at most one entry with a given log index in a given term, and log entries never change their position in the log. 
 
 
-The second property is guaranteed by a simple consistency check performed by AppendEntries. When sending an AppendEntries RPC, the leader includes the index and term of the entry in its log that immediately precedes the new entries. If the follower does not find an entry in its log with the same index and term, then it refuses the new entries.The consistency check acts as an induction step: the initial empty state of the logs satisfies the Log Matching Property, and the consistency check preserves the Log Matching Property whenever logs are extended.As a result, whenever AppendEntries returns successfully, the leader knows that the follower’s log is identical to its own log up through the new entries. 
+The second property is guaranteed by a simple consistency check performed by AppendEntries. When sending an AppendEntries RPC, the leader includes the index and term of the entry in its log that immediately precedes the new entries. If the follower does not find an entry in its log with the same index and term, then it refuses the new entries. The consistency check acts as an induction step: the initial empty state of the logs satisfies the ***Log Matching Property*​**, and the consistency check preserves the ***Log Matching Property*** whenever logs are extended. As a result, whenever AppendEntries returns successfully, the leader knows that the follower’s log is identical to its own log up through the new entries. 
 
-During normal operation, the logs of the leader and followers stay consistent, so the AppendEntries consis- tency check never fails. However, leader crashes can leave the logs inconsistent (the old leader may not have fully replicated all of the entries in its log). These inconsisten- cies can compound over a series of leader and follower crashes.A follower may be missing entries that are present on the leader, it may have extra entries that are not present on the leader, or both. Missing and extraneous entries in a log may span multiple terms.
+During normal operation, the logs of the leader and followers stay consistent, so the AppendEntries consistency check never fails. However, leader crashes can leave the logs inconsistent (the old leader may not have fully replicated all of the entries in its log). These inconsistencies can compound over a series of leader and follower crashes. A follower may be missing entries that are present on the leader, it may have extra entries that are not present on the leader, or both. Missing and extraneous entries in a log may span multiple terms.
 
 ![image](https://note.youdao.com/yws/api/personal/file/WEBba0d2f63e4fa6189033b55992f20f6ee?method=download&shareKey=5e16c868e8dbdbe3a3b4013f03cc775c)
 

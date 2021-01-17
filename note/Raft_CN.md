@@ -2,9 +2,10 @@
 
 [In Search of an Understandable Consensus Algorithm](https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf)
 
-Raft is a consensus algorithm for managing a replicated log. It produces a result equivalent to (multi-)Paxos, and it is as efficient as Paxos, but its structure is different from Paxos; this makes Raft more understandable than Paxos and also prov.
+Raft是一个共识算法。Raft是提供与Paxos相同的容错性及性能，但比Paxos更好理解的算法，同时为构建实际应用提供更好的基础。
 
-Consensus algorithms for practical systems typically have the following properties:
+Raft相比与其他一致性算法一些新特性：
+
 - **Strong leader**: Raft uses a stronger from of leadership than other consensus algorithms. e.g. log entries only flow from the leader to other servers.
 - **Leader election**: Raft uses randomized timers to elect leaders. This adds only a small amount of mechanism to the heartbeats already required for ay consensus algorithm, while resolving conflicts simply and rapidly.
 - **Membership changes**: Raft's mechanism for changing the set of servers in the cluster uses a new _joint consensus_ approach where the majorities of two different configurations overlap during transitions. This allows the cluster to continue operating normally during configuration changes.
@@ -23,6 +24,7 @@ Keeping the replicated log consistent is the job of the consensus algorithm. The
 
 
 一致性算法在实际的系统中通常有以下特性：
+
 - 在不复杂的情况下都能确保安全性(safty, 从不返回错误的结果)，包括 网络延迟，partitions, and packet loss, duplication, and reordering.
 - They are fully functional(available) as long as any majority of the servers are opreational and can communicate with each other and with clients. Servers are assumes to fail by stoppong; they may later recover from state on stable storage and rejoin the cluster.
 - They do not depend on timing to ensure the consistency of the logs: faulty clocks and extreme message delays can, at worst, cause availability problems.
@@ -34,6 +36,7 @@ Keeping the replicated log consistent is the job of the consensus algorithm. The
 Paxos first defines a protocol capable of reaching agreement on a single decision, such as a single replicated log entry. We refer to this subset as _single-decree Paxos_. Paxos then combines multiple instances of this protocol to facilitate a series of decisions such as a log (_multi-Paxos_).
 
 Paxos drawbacks:
+
 1. Paxos is exceptionally difficult to understand.
 2. Paxos does not provide a good foundation for building practical implementations.
 3. Paxos architecture is a poor one for building practical systems.
@@ -45,6 +48,7 @@ Raft implements consensus by first electing a **_distinguished leader_**, then g
 A leader can fail or become disconnected form the other servers, in which case a new leader is elected.
 
 Raft decomposesthe consensus problem into three relatively independent subproblems:
+
 1. **Leader election**: a new leader must be chosen when an existing leader fails.
 2. **Log replication**: the leader must accept log entries from clients and replicate them across the cluster, forcing the other logs to agree with its own.
 3. **Safety**: the key safety property for Raft is the State Machine Safety Property: if any server has applied a particular log entry to its state machine, then no other server may apply a different command for the same log index.
@@ -94,6 +98,7 @@ Each server stores a _current_ term number, which increases monotonically over t
 If a candidate or leader discovers that its term is out of date, it immediately reverts to follower state. If a server receives a request with a stale term number, it rejects the request.
 
 Raft servers communicate using remote procedure calls (RPCs), and the basic consensus algorithm requires only two types of RPCs:
+
 1. RequestVote RPCs, initiated by candidates during elections
 2. AppendEntries RPCs are initiated by leaders to replicate log entries and to provide a form of heartbeat 
 
@@ -108,6 +113,7 @@ When servers start up, they begin as followers. A server remains in follower sta
 To begin an election, a follower increments its current term and transitions to candidate state. It then votes for itself and issues RequestVote RPCs in parallel to each of the other servers in the cluster. 
 
 A candidate continues in this state until one of three things happens:
+
 1. it wins the election
 2. another server establishes itself as leader
 3. a period of time goes by with no winner
@@ -139,6 +145,7 @@ The leader decides when it is safe to apply a log entry to the state machines; s
 The leader keeps track of the highest index it knows to be committed, and it includes that index in future AppendEntries RPCs (including heartbeats) so that the other servers eventually find out. Once a follower learns that a log entry is committed, it applies the entry to its local state machine (in log order).
 
 Raft maintains the following properties:
+
 - If two entries in different logs have the same index and term, then they store the same command.
 - If two entries in different logs have the same index and term, then the logs are identical in all preceding entries.
 
@@ -213,8 +220,8 @@ Given the complete Raft algorithm, we can now ar- gue more precisely that the Le
 5. The voter granted its vote to leaderU, so leaderU’s log must have been as up-to-date as the voter’s. This leads to one of two contradictions.
 6. First, if the voter and leaderU shared the same last log term, then leaderU’s log must have been at least as long as the voter’s, so its log contained every entry in the voter’s log. This is a contradiction, since the voter contained the committed entry and leaderU was assumed not to.
 7. Otherwise, leaderU’s last log term must have been larger than the voter’s. Moreover, it was larger than T, since the voter’s last log term was at least T (it con- tains the committed entry from term T). The earlier leader that created leaderU’s last log entry must have contained the committed entry in its log (by assump- tion). Then, by the Log Matching Property, leaderU’s log must also contain the committed entry, which is a contradiction.
-8.This completes the contradiction. Thus, the leaders of all terms greater than T must contain all entries from term T that are committed in term T.
-9.The Log Matching Property guarantees that future leaders will also contain entries that are committed indirectly.
+    8.This completes the contradiction. Thus, the leaders of all terms greater than T must contain all entries from term T that are committed in term T.
+    9.The Log Matching Property guarantees that future leaders will also contain entries that are committed indirectly.
 
 > Leader Completeness: If a log entry is committed in a given term, then that entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms.
 

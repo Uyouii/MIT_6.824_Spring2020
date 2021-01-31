@@ -40,7 +40,7 @@ Paxos drawbacks:
 
 ## 5 The Raft consensus algorithm
 
-Raft implements consensus by first electing a **_distinguished leader_**, then giving the leader complete responsibility for managing the replicated log. The leader accepts log entries from clients, replicates them on other servers, and tells servers when it si safe to apply log entries to their state machines. 
+Raft implements consensus by first electing a **_distinguished leader_**, then giving the leader complete responsibility for managing the replicated log. The leader accepts log entries from clients, replicates them on other servers, and tells servers when it is safe to apply log entries to their state machines. 
 
 A leader can fail or become disconnected form the other servers, in which case a new leader is elected.
 

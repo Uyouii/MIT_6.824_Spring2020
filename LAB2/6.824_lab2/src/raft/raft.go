@@ -41,9 +41,6 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
-//
-// A Go object implementing a single Raft peer.
-//
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -53,7 +50,17 @@ type Raft struct {
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
+	currentTerm int      // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+	votedFor    int      // candidateId that received vote in current term (or null if none)
+	logs        []string // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1
 
+	// Volatile state on all servers
+	commitIndex int // index of highest log entry known to be committed (initialized to 0, increases monotonically)
+	lastApplied int // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+
+	// Volatile state on leaders, Reinitialized after election
+	nextIndex  []int //  for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 }
 
 // return currentTerm and whether this server believes it is the leader.
@@ -109,6 +116,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int // candidate’s term
+	CandidateId  int // candidate requesting vote
+	LastLogIndex int // index of candidate’s last log entry
+	LastLogTerm  int // term of candidate’s last log entry
 }
 
 //
@@ -117,6 +128,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int  // currentTerm, for candidate to update itself
+	VoteGranted bool // true means candidate received vote
 }
 
 //
@@ -124,6 +137,24 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+}
+
+type AppendEntriesArgs struct {
+	Trem         int // leader’s term
+	LeaderId     int // so follower can redirect clients
+	PrevLogIndex int // index of log entry immediately preceding new ones
+	PrevLogTerm  int // term of prevLogIndex entry
+	LeaderCommit int // leader’s commitIndex
+	// entries [] TODO
+}
+
+type AppendEntriesReply struct {
+	Term    int  // currentTerm, for leader to update itself
+	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+
 }
 
 //

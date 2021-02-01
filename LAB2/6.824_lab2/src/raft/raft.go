@@ -16,8 +16,10 @@ package raft
 //
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"../labrpc"
 )
@@ -61,15 +63,32 @@ type Raft struct {
 	// Volatile state on leaders, Reinitialized after election
 	nextIndex  []int //  for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+
+	isLeader           bool
+	heartBeatTimeStamp uint64
+}
+
+func (rf *Raft) Init(me int, peers []*labrpc.ClientEnd, persister *Persister) {
+	rf.peers = peers
+	rf.persister = persister
+	rf.me = me
+
+	rf.persister = nil
+	rf.me = -1
+	rf.dead = 0
+
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	rf.isLeader = false
+
 }
 
 // return currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
-	// Your code here (2A).
-	return term, isleader
+	return rf.currentTerm, rf.isLeader
 }
 
 //
@@ -137,6 +156,8 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+	fmt.Printf("RequestVote, candidate: %d, peer: %d\n", args.CandidateId, rf.me)
 }
 
 type AppendEntriesArgs struct {
@@ -191,6 +212,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+
+}
+
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -236,6 +261,23 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) CheckLeader() {
+	for !rf.killed() {
+
+		if rf.currentTerm == 0 {
+
+		}
+
+		time.Sleep(30 * time.Millisecond)
+	}
+}
+
+func (rf *Raft) Run() {
+	fmt.Printf(">>>>>>>>>>> Raft Run, id: %d\n", rf.me)
+
+	go rf.CheckLeader()
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -247,14 +289,11 @@ func (rf *Raft) killed() bool {
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
 
-	// Your initialization code here (2A, 2B, 2C).
+	rf.Init(me, peers, persister)
+	go rf.Run()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

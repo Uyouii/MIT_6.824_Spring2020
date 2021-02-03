@@ -32,11 +32,14 @@ type RaftPeerState int32
 
 const (
 	PEER_STATE_DEFAULT        RaftPeerState = 0
-	PEER_STATE_CANDIDATE      RaftPeerState = 1
+	PEER_STATE_TRY_ELECTION   RaftPeerState = 1
 	PEER_STATE_DELCARE_LEADER RaftPeerState = 2
-	PEER_STATE_RECV_VOTE      RaftPeerState = 3
+	PEER_STATE_CANDIDATE      RaftPeerState = 3
 	PEER_STATE_LEADER         RaftPeerState = 4
 )
+
+const ELECTION_TIME int = 300
+const HEART_BEAT_INTERVAL int = 200
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -77,8 +80,8 @@ type Raft struct {
 	nextIndex  []int //  for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 
-	state              RaftPeerState
-	heartBeatTimeStamp uint64
+	stateMap           map[int]RaftPeerState
+	heartBeatTimeStamp int64
 }
 
 func (rf *Raft) Init(me int, peers []*labrpc.ClientEnd, persister *Persister) {
@@ -94,13 +97,17 @@ func (rf *Raft) Init(me int, peers []*labrpc.ClientEnd, persister *Persister) {
 	rf.lastApplied = 0
 	rf.electionTerm = 0
 
-	rf.state = PEER_STATE_DEFAULT
 	rf.heartBeatTimeStamp = 0
+
+	rf.stateMap = make(map[int]RaftPeerState)
+	rf.stateMap[0] = PEER_STATE_DEFAULT
+
+	fmt.Printf("-------- Init, id %d\n", rf.me)
 }
 
 // return currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return rf.currentTerm, rf.state == PEER_STATE_LEADER
+	return rf.currentTerm, rf.stateMap[rf.currentTerm] == PEER_STATE_LEADER
 }
 
 //
@@ -175,7 +182,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	ret := rf.ChangeSelfTerm(args.Term, PEER_STATE_RECV_VOTE)
+	ret := rf.ChangeSelfTerm(args.Term, PEER_STATE_CANDIDATE)
 	if ret {
 		reply.VoteGranted = true
 		reply.Term = rf.currentTerm
@@ -194,7 +201,7 @@ func (rf *Raft) ChangeSelfTerm(term int, state RaftPeerState) bool {
 	}
 
 	rf.currentTerm = term
-	rf.state = state
+	rf.stateMap[term] = state
 
 	return true
 }
@@ -296,7 +303,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
+	fmt.Printf("-------- Kill, id: %d\n", rf.me)
 }
 
 func (rf *Raft) killed() bool {
@@ -307,34 +314,47 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) GetRandomTimeOut() int {
 	nowTime := time.Now().UnixNano()
 	rand.Seed(nowTime)
-	return rand.Intn(300) + 300
+	return rand.Intn(ELECTION_TIME) + ELECTION_TIME
 }
 
 func (rf *Raft) SendHeatBeat() {
 	term := rf.currentTerm
 
-	for term == rf.currentTerm && rf.state == PEER_STATE_LEADER {
+	for term == rf.currentTerm && rf.stateMap[rf.currentTerm] == PEER_STATE_LEADER {
 
 	}
 }
 
-func (rf *Raft) BeLeader() {
-	rf.state = PEER_STATE_LEADER
+func (rf *Raft) BeLeader(term int) {
+	fmt.Printf("-------- BeLeader, id: %d, currentTerm: %d\n", rf.me, rf.currentTerm)
+	rf.stateMap[term] = PEER_STATE_LEADER
 
 }
 
-func (rf *Raft) TryElection() {
-	if rf.electionTerm >= rf.currentTerm && rf.electionTerm != 0 {
+func (rf *Raft) CheckHeartBeat(term int) {
+	if term == 0 {
 		return
 	}
 
-	rf.electionTerm = rf.currentTerm + 1
-	currentTerm := rf.currentTerm
+	curMsTime := time.Now().UnixNano() / 1e6
+	if curMsTime-rf.heartBeatTimeStamp >= int64(HEART_BEAT_INTERVAL) {
+		rf.TryElection(term + 1)
+	}
+
+}
+
+func (rf *Raft) TryElection(term int) {
+
+	if rf.stateMap[term] != PEER_STATE_DEFAULT {
+		return
+	}
+
+	rf.stateMap[term] = PEER_STATE_TRY_ELECTION
 
 	timeOut := rf.GetRandomTimeOut()
 	time.Sleep(time.Duration(timeOut) * time.Millisecond)
 
-	ret := rf.ChangeSelfTerm(currentTerm+1, PEER_STATE_DELCARE_LEADER)
+	ret := rf.ChangeSelfTerm(term, PEER_STATE_DELCARE_LEADER)
 	if ret == false {
 		return
 	}
@@ -342,7 +362,7 @@ func (rf *Raft) TryElection() {
 	fmt.Printf("-------- TryElection Begin, id: %d, currentTerm: %d\n",
 		rf.me, rf.currentTerm)
 
-	currentTerm = rf.currentTerm
+	currentTerm := rf.currentTerm
 
 	var wg sync.WaitGroup
 
@@ -367,12 +387,14 @@ func (rf *Raft) TryElection() {
 			wg.Done()
 		}(index)
 	}
+
 	wg.Wait()
 
 	fmt.Printf("-------- TryElection, id: %d, voteCount: %d\n",
 		rf.me, voteCount)
+
 	if voteCount > len(rf.peers)/2.0 && currentTerm == rf.currentTerm {
-		rf.BeLeader()
+		rf.BeLeader(currentTerm)
 	}
 
 }
@@ -383,9 +405,8 @@ func (rf *Raft) CheckStatus() {
 	for !rf.killed() {
 		// oldTerm = currentTerm
 		// currentTerm = rf.currentTerm
-		if rf.electionTerm == 0 {
-			rf.TryElection()
-		}
+		rf.TryElection(1)
+
 		time.Sleep(30 * time.Millisecond)
 	}
 }

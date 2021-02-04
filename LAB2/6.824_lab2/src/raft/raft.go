@@ -249,6 +249,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if term > args.Term {
 		reply.Term = term
+		reply.Success = false
 		return
 	}
 
@@ -263,6 +264,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	reply.Term = args.Term
+	reply.Success = true
 }
 
 //

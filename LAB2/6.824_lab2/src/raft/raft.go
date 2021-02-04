@@ -168,7 +168,6 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (2A).
 	Term        int  // currentTerm, for candidate to update itself
 	VoteGranted bool // true means candidate received vote
 }
@@ -495,7 +494,6 @@ func (rf *Raft) TryElection(newTrem int) {
 	}
 
 	rf.SetTermState(newTrem, PEER_STATE_CANDIDATE)
-
 	rf.ChangeSelfTerm(newTrem)
 
 	fmt.Printf("-------- TryElection Begin, id: %d, currentTerm: %d\n",

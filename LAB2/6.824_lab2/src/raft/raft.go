@@ -28,18 +28,9 @@ import (
 // import "bytes"
 // import "../labgob"
 
-type RaftPeerState int32
-
-const (
-	PEER_STATE_DEFAULT        RaftPeerState = 0
-	PEER_STATE_TRY_ELECTION   RaftPeerState = 1
-	PEER_STATE_DELCARE_LEADER RaftPeerState = 2
-	PEER_STATE_CANDIDATE      RaftPeerState = 3
-	PEER_STATE_LEADER         RaftPeerState = 4
-)
-
 const ELECTION_TIME int = 300
 const HEART_BEAT_INTERVAL int = 200
+const SEND_REQUEST_TIME_OUT int = 300
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -56,6 +47,16 @@ type ApplyMsg struct {
 	Command      interface{}
 	CommandIndex int
 }
+
+type RaftPeerState int32
+
+const (
+	PEER_STATE_DEFAULT      RaftPeerState = 0
+	PEER_STATE_TRY_ELECTION RaftPeerState = 1
+	PEER_STATE_CANDIDATE    RaftPeerState = 2
+	PEER_STATE_FOLLOWER     RaftPeerState = 3
+	PEER_STATE_LEADER       RaftPeerState = 4
+)
 
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -81,6 +82,7 @@ type Raft struct {
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 
 	stateMap           map[int]RaftPeerState
+	stateMux           sync.Mutex
 	heartBeatTimeStamp int64
 }
 
@@ -107,7 +109,8 @@ func (rf *Raft) Init(me int, peers []*labrpc.ClientEnd, persister *Persister) {
 
 // return currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return rf.currentTerm, rf.stateMap[rf.currentTerm] == PEER_STATE_LEADER
+	term := rf.GetTerm()
+	return term, rf.GetTermState(term) == PEER_STATE_LEADER
 }
 
 //
@@ -174,44 +177,66 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	defer fmt.Printf("-------- RequestVote, candidateid: %d, me: %d, ret: %t, reqterm: %d, selfterm: %d\n",
-		args.CandidateId, rf.me, reply.VoteGranted, args.Term, rf.currentTerm)
-
-	if rf.currentTerm >= args.Term {
+	if rf.GetTerm() >= args.Term {
 		reply.VoteGranted = false
 		return
 	}
 
-	ret := rf.ChangeSelfTerm(args.Term, PEER_STATE_CANDIDATE)
+	ret := rf.ChangeSelfTerm(args.Term)
 	if ret {
+		rf.SetTermState(args.Term, PEER_STATE_FOLLOWER)
 		reply.VoteGranted = true
-		reply.Term = rf.currentTerm
+		reply.Term = args.Term
 		return
 	}
 
 	reply.VoteGranted = false
 }
 
-func (rf *Raft) ChangeSelfTerm(term int, state RaftPeerState) bool {
+func (rf *Raft) ChangeSelfTerm(term int) bool {
 	rf.termMux.Lock()
 	defer rf.termMux.Unlock()
 
 	if rf.currentTerm >= term {
 		return false
 	}
-
 	rf.currentTerm = term
-	rf.stateMap[term] = state
 
 	return true
 }
 
+func (rf *Raft) GetTerm() int {
+	rf.termMux.Lock()
+	defer rf.termMux.Unlock()
+	return rf.currentTerm
+}
+
+func (rf *Raft) SetTermState(term int, state RaftPeerState) {
+	rf.stateMux.Lock()
+	rf.stateMap[term] = state
+	rf.stateMux.Unlock()
+}
+
+func (rf *Raft) GetTermState(term int) RaftPeerState {
+	rf.stateMux.Lock()
+	defer rf.stateMux.Unlock()
+	return rf.stateMap[term]
+}
+
+type AppendEntriesType int32
+
+const (
+	ENTRY_TYPE_DEFAULT    AppendEntriesType = 0
+	ENTRY_TYPE_HEART_BEAT AppendEntriesType = 1
+)
+
 type AppendEntriesArgs struct {
-	Trem         int // leader’s term
+	Term         int // leader’s term
 	LeaderId     int // so follower can redirect clients
 	PrevLogIndex int // index of log entry immediately preceding new ones
 	PrevLogTerm  int // term of prevLogIndex entry
 	LeaderCommit int // leader’s commitIndex
+	Type         AppendEntriesType
 	// entries [] TODO
 }
 
@@ -221,7 +246,24 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	term := rf.GetTerm()
 
+	if term > args.Term {
+		reply.Term = term
+		return
+	}
+
+	if term < args.Term {
+		rf.ChangeSelfTerm(args.Term)
+	}
+
+	rf.SetTermState(args.Term, PEER_STATE_FOLLOWER)
+
+	if args.Type == ENTRY_TYPE_HEART_BEAT {
+		rf.SetHeartTimeStamp(int64(time.Now().UnixNano() / 1e6))
+	}
+
+	reply.Term = args.Term
 }
 
 //
@@ -254,15 +296,40 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	beginMsTime := time.Now().UnixNano() / 1e6
+
+	fmt.Printf("-------- sendRequestVote, candidateid: %d, reciver: %d, reqterm: %d\n",
+		args.CandidateId, server, args.Term)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+
+	endMsTime := time.Now().UnixNano() / 1e6
+	intervalMsTime := endMsTime - beginMsTime
 	if ok == false {
-		fmt.Println("-------- sendRequestVote failed")
+		fmt.Printf("-------- sendRequestVote failed, candidateid: %d, reciver: %d, reqterm: %d, cost: %d\n",
+			args.CandidateId, server, args.Term, intervalMsTime)
+	} else {
+		fmt.Printf("-------- sendRequestVote succ, candidateid: %d, receiver: %d, reqterm: %d, selfterm: %d, granted: %t, cost: %d\n",
+			args.CandidateId, server, args.Term, rf.GetTerm(), reply.VoteGranted, intervalMsTime)
 	}
 	return ok
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	fmt.Printf("-------- sendAppendEntries,  leader: %d, reciver: %d, leaderterm: %d\n",
+		args.LeaderId, server, args.Term)
+
+	beginMsTime := time.Now().UnixNano() / 1e6
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	endMsTime := time.Now().UnixNano() / 1e6
+	intervalMsTime := endMsTime - beginMsTime
+
+	if ok == false {
+		fmt.Printf("-------- sendAppendEntries failed,  leader: %d, reciver: %d, leaderterm: %d, cost: %d\n",
+			args.LeaderId, server, args.Term, intervalMsTime)
+	} else {
+		fmt.Printf("-------- sendAppendEntries succ, leader: %d, reciver: %d, leaderterm: %d, meterm: %d, ret: %t, cost : %d\n",
+			args.LeaderId, server, args.Term, rf.GetTerm(), reply.Success, intervalMsTime)
+	}
 	return ok
 }
 
@@ -311,24 +378,84 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) SetHeartTimeStamp(time int64) {
+	atomic.StoreInt64(&rf.heartBeatTimeStamp, time)
+}
+
+func (rf *Raft) GetHeartTimeStamp() int64 {
+	return atomic.LoadInt64(&rf.heartBeatTimeStamp)
+}
+
 func (rf *Raft) GetRandomTimeOut() int {
 	nowTime := time.Now().UnixNano()
 	rand.Seed(nowTime)
 	return rand.Intn(ELECTION_TIME) + ELECTION_TIME
 }
 
-func (rf *Raft) SendHeatBeat() {
-	term := rf.currentTerm
+func (rf *Raft) SendHeatBeat(term int) {
 
-	for term == rf.currentTerm && rf.stateMap[rf.currentTerm] == PEER_STATE_LEADER {
+	for term == rf.GetTerm() &&
+		rf.GetTermState(term) == PEER_STATE_LEADER &&
+		!rf.killed() {
 
+		beginMsTime := time.Now().UnixNano() / 1e6
+
+		var wg sync.WaitGroup
+
+		for index := 0; index < len(rf.peers); index++ {
+			if index == rf.me {
+				continue
+			}
+
+			wg.Add(1)
+
+			args := AppendEntriesArgs{
+				Term:     rf.GetTerm(),
+				LeaderId: rf.me,
+				Type:     ENTRY_TYPE_HEART_BEAT,
+			}
+			var reply AppendEntriesReply
+
+			reqDone := int32(0)
+
+			go func(index int) {
+				ret := rf.sendAppendEntries(index, &args, &reply)
+				if atomic.LoadInt32(&reqDone) == 0 {
+					atomic.StoreInt32(&reqDone, 1)
+					wg.Done()
+				}
+				if atomic.LoadInt32(&reqDone) == 0 && ret && reply.Term > rf.GetTerm() {
+					rf.ChangeSelfTerm(reply.Term)
+					rf.SetTermState(reply.Term, PEER_STATE_FOLLOWER)
+					return
+				}
+			}(index)
+
+			go func(index int) {
+				time.Sleep(time.Duration(SEND_REQUEST_TIME_OUT) * time.Millisecond)
+				done := atomic.LoadInt32(&reqDone)
+				if done == 0 {
+					atomic.StoreInt32(&reqDone, 1)
+					wg.Done()
+				}
+			}(index)
+		}
+
+		wg.Wait()
+
+		endMsTime := time.Now().UnixNano() / 1e6
+		intervelMsTime := endMsTime - beginMsTime
+
+		if intervelMsTime < int64(HEART_BEAT_INTERVAL) {
+			time.Sleep(time.Duration(int64(HEART_BEAT_INTERVAL)-intervelMsTime) * time.Millisecond)
+		}
 	}
 }
 
 func (rf *Raft) BeLeader(term int) {
-	fmt.Printf("-------- BeLeader, id: %d, currentTerm: %d\n", rf.me, rf.currentTerm)
-	rf.stateMap[term] = PEER_STATE_LEADER
-
+	fmt.Printf("-------- BeLeader, id: %d, currentTerm: %d\n", rf.me, rf.GetTerm())
+	rf.SetTermState(term, PEER_STATE_LEADER)
+	go rf.SendHeatBeat(term)
 }
 
 func (rf *Raft) CheckHeartBeat(term int) {
@@ -336,37 +463,47 @@ func (rf *Raft) CheckHeartBeat(term int) {
 		return
 	}
 
-	curMsTime := time.Now().UnixNano() / 1e6
-	if curMsTime-rf.heartBeatTimeStamp >= int64(HEART_BEAT_INTERVAL) {
-		rf.TryElection(term + 1)
-	}
+	state := rf.GetTermState(term)
+	if state == PEER_STATE_FOLLOWER {
 
+		// fmt.Printf("-------- CheckHeartBeat, id: %d, currentTerm: %d, state: %d\n",
+		// 	rf.me, rf.currentTerm, rf.stateMap[term])
+
+		curMsTime := time.Now().UnixNano() / 1e6
+		if curMsTime-rf.GetHeartTimeStamp() >= int64(SEND_REQUEST_TIME_OUT) {
+
+			rf.TryElection(term + 1)
+
+		}
+	}
 }
 
-func (rf *Raft) TryElection(term int) {
+func (rf *Raft) TryElection(newTrem int) {
 
-	if rf.stateMap[term] != PEER_STATE_DEFAULT {
+	state := rf.GetTermState(newTrem)
+	if state != PEER_STATE_DEFAULT {
 		return
 	}
 
-	rf.stateMap[term] = PEER_STATE_TRY_ELECTION
+	rf.SetTermState(newTrem, PEER_STATE_TRY_ELECTION)
 
 	timeOut := rf.GetRandomTimeOut()
 	time.Sleep(time.Duration(timeOut) * time.Millisecond)
 
-	ret := rf.ChangeSelfTerm(term, PEER_STATE_DELCARE_LEADER)
-	if ret == false {
+	if rf.GetTerm() >= newTrem {
 		return
 	}
 
-	fmt.Printf("-------- TryElection Begin, id: %d, currentTerm: %d\n",
-		rf.me, rf.currentTerm)
+	rf.SetTermState(newTrem, PEER_STATE_CANDIDATE)
 
-	currentTerm := rf.currentTerm
+	rf.ChangeSelfTerm(newTrem)
+
+	fmt.Printf("-------- TryElection Begin, id: %d, currentTerm: %d\n",
+		rf.me, newTrem)
 
 	var wg sync.WaitGroup
 
-	voteCount := 0
+	voteCount := int32(0)
 
 	for index := 0; index < len(rf.peers); index++ {
 		if index == rf.me {
@@ -375,39 +512,66 @@ func (rf *Raft) TryElection(term int) {
 
 		wg.Add(1)
 		args := RequestVoteArgs{
-			Term:        currentTerm,
+			Term:        newTrem,
 			CandidateId: rf.me,
 		}
 		var reply RequestVoteReply
+
+		reqDone := int32(0)
+
 		go func(index int) {
 			ret := rf.sendRequestVote(index, &args, &reply)
-			if ret && reply.VoteGranted && reply.Term == currentTerm {
-				voteCount += 1
+			if atomic.LoadInt32(&reqDone) == 0 {
+				atomic.StoreInt32(&reqDone, 1)
+				wg.Done()
+			} else {
+				return
 			}
-			wg.Done()
+			if ret && reply.VoteGranted && reply.Term == newTrem {
+				atomic.AddInt32(&voteCount, 1)
+			}
+		}(index)
+
+		go func(index int) {
+			time.Sleep(time.Duration(SEND_REQUEST_TIME_OUT) * time.Millisecond)
+			done := atomic.LoadInt32(&reqDone)
+			if done == 0 {
+				atomic.StoreInt32(&reqDone, 1)
+				wg.Done()
+			}
 		}(index)
 	}
 
 	wg.Wait()
 
-	fmt.Printf("-------- TryElection, id: %d, voteCount: %d\n",
-		rf.me, voteCount)
+	count := atomic.LoadInt32(&voteCount)
+	fmt.Printf("-------- TryElection, id: %d, term: %d, voteCount: %d, peerscount: %d\n",
+		rf.me, rf.GetTerm(), count, len(rf.peers))
 
-	if voteCount > len(rf.peers)/2.0 && currentTerm == rf.currentTerm {
-		rf.BeLeader(currentTerm)
+	if count >= int32((len(rf.peers)-1)/2) && newTrem == rf.GetTerm() {
+		rf.BeLeader(newTrem)
+	} else {
+		rf.SetTermState(rf.GetTerm(), PEER_STATE_FOLLOWER)
 	}
 
 }
 
 func (rf *Raft) CheckStatus() {
-	// currentTerm := rf.currentTerm
-	// oldTerm := 0
 	for !rf.killed() {
-		// oldTerm = currentTerm
-		// currentTerm = rf.currentTerm
 		rf.TryElection(1)
+		rf.CheckHeartBeat(rf.GetTerm())
 
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
+
+	}
+}
+
+func (rf *Raft) PrintStatus() {
+	for !rf.killed() {
+		time.Sleep(300 * time.Millisecond)
+		term := rf.GetTerm()
+		fmt.Printf("-------- PrintStatus, id: %d, term: %d, state: %d\n",
+			rf.me, term, rf.GetTermState(term))
 	}
 }
 
@@ -415,6 +579,7 @@ func (rf *Raft) Run() {
 	fmt.Printf("-------- Raft Run, id: %d\n", rf.me)
 
 	go rf.CheckStatus()
+	go rf.PrintStatus()
 }
 
 //

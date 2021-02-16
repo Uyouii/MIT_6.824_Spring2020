@@ -32,6 +32,7 @@ const ELECTION_TIME int = 300
 const HEART_BEAT_INTERVAL int = 200
 const SEND_REQUEST_TIME_OUT int = 300
 const SHOW_LOG bool = false
+const RAFT_RUN_LOOP int = 100
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -59,6 +60,12 @@ const (
 	PEER_STATE_LEADER       RaftPeerState = 4
 )
 
+type RaftEntry struct {
+	Cmd   interface{}
+	Index int
+	Term  int
+}
+
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -71,8 +78,9 @@ type Raft struct {
 	currentTerm  int // latest term server has seen (initialized to 0 on first boot, increases monotonically)
 	electionTerm int
 	termMux      sync.Mutex
-	votedFor     int      // candidateId that received vote in current term (or null if none)
-	logs         []string // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1
+	votedFor     int         // candidateId that received vote in current term (or null if none)
+	logs         []RaftEntry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1
+	logMux       sync.Mutex
 
 	// Volatile state on all servers
 	commitIndex int // index of highest log entry known to be committed (initialized to 0, increases monotonically)
@@ -118,6 +126,46 @@ func (rf *Raft) Print(log string) {
 func (rf *Raft) GetState() (int, bool) {
 	term := rf.GetTerm()
 	return term, rf.GetTermState(term) == PEER_STATE_LEADER
+}
+
+func (rf *Raft) GetStateString() string {
+	state, isleader := rf.GetState()
+	return fmt.Sprintf("id: %d, state: %d, term: %d, isleader: %t", rf.me, state, rf.GetTerm(), isleader)
+}
+
+//
+// the tester doesn't halt goroutines created by Raft after each test,
+// but it does call the Kill() method. your code can use killed() to
+// check whether Kill() has been called. the use of atomic avoids the
+// need for a lock.
+//
+// the issue is that long-running goroutines use memory and may chew
+// up CPU time, perhaps causing later tests to fail and generating
+// confusing debug output. any goroutine with a long-running loop
+// should call killed() to check whether it should stop.
+//
+func (rf *Raft) Kill() {
+	atomic.StoreInt32(&rf.dead, 1)
+	rf.Print(fmt.Sprintf("Kill, id: %d", rf.me))
+}
+
+func (rf *Raft) killed() bool {
+	z := atomic.LoadInt32(&rf.dead)
+	return z == 1
+}
+
+func (rf *Raft) SetHeartTimeStamp(time int64) {
+	atomic.StoreInt64(&rf.heartBeatTimeStamp, time)
+}
+
+func (rf *Raft) GetHeartTimeStamp() int64 {
+	return atomic.LoadInt64(&rf.heartBeatTimeStamp)
+}
+
+func (rf *Raft) GetRandomTimeOut() int {
+	nowTime := time.Now().UnixNano()
+	rand.Seed(nowTime)
+	return rand.Intn(ELECTION_TIME) + ELECTION_TIME
 }
 
 //
@@ -229,21 +277,13 @@ func (rf *Raft) GetTermState(term int) RaftPeerState {
 	return rf.stateMap[term]
 }
 
-type AppendEntriesType int32
-
-const (
-	ENTRY_TYPE_DEFAULT    AppendEntriesType = 0
-	ENTRY_TYPE_HEART_BEAT AppendEntriesType = 1
-)
-
 type AppendEntriesArgs struct {
 	Term         int // leader’s term
 	LeaderId     int // so follower can redirect clients
 	PrevLogIndex int // index of log entry immediately preceding new ones
 	PrevLogTerm  int // term of prevLogIndex entry
 	LeaderCommit int // leader’s commitIndex
-	Type         AppendEntriesType
-	// entries [] TODO
+	Entries      []RaftEntry
 }
 
 type AppendEntriesReply struct {
@@ -266,7 +306,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.SetTermState(args.Term, PEER_STATE_FOLLOWER)
 
-	if args.Type == ENTRY_TYPE_HEART_BEAT {
+	// heart beat
+	if len(args.Entries) == 0 {
 		rf.SetHeartTimeStamp(int64(time.Now().UnixNano() / 1e6))
 	}
 
@@ -346,14 +387,28 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+func (rf *Raft) AppendLog(command interface{}) RaftEntry {
+
+	rf.logMux.Lock()
+	defer rf.logMux.Unlock()
+
+	entry := RaftEntry{
+		Cmd:   command,
+		Term:  rf.GetTerm(),
+		Index: len(rf.logs) + 1,
+	}
+
+	rf.logs = append(rf.logs, entry)
+
+	return entry
+}
+
 //
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
+// the service using Raft (e.g. a k/v server) wants to start agreement on the next command to be appended to Raft's log.
+// if this server isn't the leader, returns false.
+// otherwise start the agreement and return immediately.
+// there is no guarantee that this command will ever be committed to the Raft log, since the leader may fail or lose an election.
+// even if the Raft instance has been killed, this function should return gracefully.
 //
 // the first return value is the index that the command will appear at
 // if it's ever committed. the second return value is the current
@@ -361,100 +416,81 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
 
-	// Your code here (2B).
+	fmt.Printf("Start, commamd: %d, %v\n", command, rf.GetStateString())
+
+	term, isLeader := rf.GetState()
+	index := -1
+
+	if !isLeader {
+		return index, term, isLeader
+	}
+
+	entry := rf.AppendLog(command)
+	go rf.SendEntry(&entry)
 
 	return index, term, isLeader
 }
 
-//
-// the tester doesn't halt goroutines created by Raft after each test,
-// but it does call the Kill() method. your code can use killed() to
-// check whether Kill() has been called. the use of atomic avoids the
-// need for a lock.
-//
-// the issue is that long-running goroutines use memory and may chew
-// up CPU time, perhaps causing later tests to fail and generating
-// confusing debug output. any goroutine with a long-running loop
-// should call killed() to check whether it should stop.
-//
-func (rf *Raft) Kill() {
-	atomic.StoreInt32(&rf.dead, 1)
-	rf.Print(fmt.Sprintf("Kill, id: %d", rf.me))
+func (rf *Raft) SendEntry(entry *RaftEntry) {
+	// entryTerm := entry.Term
+
 }
 
-func (rf *Raft) killed() bool {
-	z := atomic.LoadInt32(&rf.dead)
-	return z == 1
+func (rf *Raft) BroadcastAppendEntry(args *AppendEntriesArgs) {
+	var wg sync.WaitGroup
+
+	for index := 0; index < len(rf.peers); index++ {
+		if index == rf.me {
+			continue
+		}
+
+		wg.Add(1)
+
+		var reply AppendEntriesReply
+
+		reqDone := int32(0)
+
+		go func(index int) {
+			ret := rf.sendAppendEntries(index, args, &reply)
+			if atomic.LoadInt32(&reqDone) == 0 {
+				atomic.StoreInt32(&reqDone, 1)
+				wg.Done()
+			}
+			if atomic.LoadInt32(&reqDone) == 0 && ret && reply.Term > rf.GetTerm() {
+				rf.ChangeSelfTerm(reply.Term)
+				rf.SetTermState(reply.Term, PEER_STATE_FOLLOWER)
+				return
+			}
+		}(index)
+
+		go func(index int) {
+			time.Sleep(time.Duration(SEND_REQUEST_TIME_OUT) * time.Millisecond)
+			done := atomic.LoadInt32(&reqDone)
+			if done == 0 {
+				atomic.StoreInt32(&reqDone, 1)
+				wg.Done()
+			}
+		}(index)
+	}
+
+	wg.Wait()
 }
 
-func (rf *Raft) SetHeartTimeStamp(time int64) {
-	atomic.StoreInt64(&rf.heartBeatTimeStamp, time)
-}
-
-func (rf *Raft) GetHeartTimeStamp() int64 {
-	return atomic.LoadInt64(&rf.heartBeatTimeStamp)
-}
-
-func (rf *Raft) GetRandomTimeOut() int {
-	nowTime := time.Now().UnixNano()
-	rand.Seed(nowTime)
-	return rand.Intn(ELECTION_TIME) + ELECTION_TIME
-}
-
-func (rf *Raft) SendHeatBeat(term int) {
+func (rf *Raft) StartHeatBeat(term int) {
 
 	for term == rf.GetTerm() &&
 		rf.GetTermState(term) == PEER_STATE_LEADER &&
 		!rf.killed() {
 
-		beginMsTime := time.Now().UnixNano() / 1e6
-
-		var wg sync.WaitGroup
-
-		for index := 0; index < len(rf.peers); index++ {
-			if index == rf.me {
-				continue
-			}
-
-			wg.Add(1)
-
-			args := AppendEntriesArgs{
-				Term:     rf.GetTerm(),
-				LeaderId: rf.me,
-				Type:     ENTRY_TYPE_HEART_BEAT,
-			}
-			var reply AppendEntriesReply
-
-			reqDone := int32(0)
-
-			go func(index int) {
-				ret := rf.sendAppendEntries(index, &args, &reply)
-				if atomic.LoadInt32(&reqDone) == 0 {
-					atomic.StoreInt32(&reqDone, 1)
-					wg.Done()
-				}
-				if atomic.LoadInt32(&reqDone) == 0 && ret && reply.Term > rf.GetTerm() {
-					rf.ChangeSelfTerm(reply.Term)
-					rf.SetTermState(reply.Term, PEER_STATE_FOLLOWER)
-					return
-				}
-			}(index)
-
-			go func(index int) {
-				time.Sleep(time.Duration(SEND_REQUEST_TIME_OUT) * time.Millisecond)
-				done := atomic.LoadInt32(&reqDone)
-				if done == 0 {
-					atomic.StoreInt32(&reqDone, 1)
-					wg.Done()
-				}
-			}(index)
+		args := AppendEntriesArgs{
+			Term:     rf.GetTerm(),
+			LeaderId: rf.me,
 		}
 
-		wg.Wait()
+		beginMsTime := time.Now().UnixNano() / 1e6
+
+		rf.BroadcastAppendEntry(&args)
 
 		endMsTime := time.Now().UnixNano() / 1e6
 		intervelMsTime := endMsTime - beginMsTime
@@ -468,7 +504,7 @@ func (rf *Raft) SendHeatBeat(term int) {
 func (rf *Raft) BeLeader(term int) {
 	rf.Print(fmt.Sprintf("BeLeader, id: %d, currentTerm: %d", rf.me, rf.GetTerm()))
 	rf.SetTermState(term, PEER_STATE_LEADER)
-	go rf.SendHeatBeat(term)
+	go rf.StartHeatBeat(term)
 }
 
 func (rf *Raft) CheckHeartBeat(term int) {
@@ -570,7 +606,7 @@ func (rf *Raft) CheckStatus() {
 		rf.TryElection(1)
 		rf.CheckHeartBeat(rf.GetTerm())
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(time.Duration(RAFT_RUN_LOOP) * time.Millisecond)
 
 	}
 }
@@ -593,13 +629,13 @@ func (rf *Raft) Run() {
 }
 
 //
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
+// the service or tester wants to create a Raft server.
+// the ports of all the Raft servers (including this one) are in peers[].
+// this server's port is peers[me].
+// all the servers' peers[] arrays have the same order.
+// persister is a place for this server to save its persistent state,
+// and also initially holds the most recent saved state, if any.
+// applyCh is a channel on which the tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //

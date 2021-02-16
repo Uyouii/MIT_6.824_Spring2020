@@ -457,7 +457,7 @@ func (rf *Raft) BroadcastAppendEntry(args *AppendEntriesArgs) {
 				atomic.StoreInt32(&reqDone, 1)
 				wg.Done()
 			}
-			if atomic.LoadInt32(&reqDone) == 0 && ret && reply.Term > rf.GetTerm() {
+			if ret && reply.Success == false && reply.Term > rf.GetTerm() {
 				rf.ChangeSelfTerm(reply.Term)
 				rf.SetTermState(reply.Term, PEER_STATE_FOLLOWER)
 				return

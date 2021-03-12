@@ -438,6 +438,7 @@ func (rf *Raft) SendEntry(entry *RaftEntry) {
 }
 
 func (rf *Raft) BroadcastAppendEntry(args *AppendEntriesArgs) {
+
 	var wg sync.WaitGroup
 
 	for index := 0; index < len(rf.peers); index++ {
